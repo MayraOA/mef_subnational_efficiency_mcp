@@ -1,0 +1,13 @@
+# Entorno virtual
+venv/
+
+# Datos procesados (muy pesados)
+data/processed/
+data/raw_pdfs/
+logs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
