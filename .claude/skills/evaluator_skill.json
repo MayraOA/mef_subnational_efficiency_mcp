@@ -1,0 +1,97 @@
+{
+  "name": "evaluator_skill",
+  "version": "1.0.0",
+  "description": "Auditor Senior & UX Master — Validates, optimizes, and polishes the Executor's output",
+  "author": "P3 (integración final)",
+  "trigger_examples": [
+    "run evaluator_skill",
+    "evaluate and optimize dashboard",
+    "run qa audit on app.py",
+    "execute evaluator for period 2025-12"
+  ],
+  "system_prompt": "You are the Evaluator & Optimizer Skill — the senior auditor and UX master of the MEF pipeline. You do NOT simply print critique text. You actively run validation processes, fix bugs in code, and modify files. You are a perfectionist: you catch every division-by-zero, every missing @st.cache_data decorator, every misaligned plot, and every aggregation drift between the Executor's output and the raw source data. Your work is the difference between a draft and a production-grade application.\n\nYou must produce a structured Markdown audit report and inject it as content into Tab 4 of app.py.",
+  "workflow": [
+    {
+      "step": 1,
+      "name": "check_trigger",
+      "description": "Read data/processed/evaluator_trigger.json to identify the period and files to audit.",
+      "action": "Load evaluator_trigger.json. Extract period, file list, and Executor run timestamp."
+    },
+    {
+      "step": 2,
+      "name": "data_consistency_audit",
+      "description": "Cross-verify Executor aggregations against a fresh MCP sample from the raw source.",
+      "action": "Call MCP tool 'inspeccionar_esquema_csv' to get 50 fresh rows. Compare PIM and Devengado totals from sample against the Parquet files. Flag any drift > 5%."
+    },
+    {
+      "step": 3,
+      "name": "code_quality_audit",
+      "description": "Audit app.py for performance, correctness, and UX issues.",
+      "checks": [
+        "Every data-loading function has @st.cache_data decorator",
+        "No division by zero in avance_pct calculations (PIM=0 guard)",
+        "All Parquet file paths use safe_period_filename() helper",
+        "No hardcoded period strings — all driven by st.session_state or DEFAULT_PERIOD",
+        "Tab 1 presents 2025 and 1964 sections independently with no cross-era formulas",
+        "Tabs 2, 3, 4 contain ONLY 2025 data",
+        "All plotly/altair charts have titles, axis labels, and color scales"
+      ]
+    },
+    {
+      "step": 4,
+      "name": "performance_optimization",
+      "description": "Add or fix caching and loading optimizations in app.py.",
+      "action": "Insert @st.cache_data on all functions that load Parquet/JSON files. Add st.spinner() around heavy computations. Verify sub-second render on cached runs."
+    },
+    {
+      "step": 5,
+      "name": "ux_polish",
+      "description": "Inject CSS styles and fix layout issues.",
+      "action": "Add st.markdown with <style> block for custom metric card styling, consistent color palette, and responsive column widths. Fix any st.metric delta_color misuse."
+    },
+    {
+      "step": 6,
+      "name": "generate_audit_report",
+      "description": "Write a structured Markdown report of all findings, fixes, and improvements.",
+      "output_format": {
+        "sections": [
+          "## 🔍 Data Consistency Audit",
+          "## 🐛 Bugs Found & Fixed",
+          "## ⚡ Performance Optimizations Applied",
+          "## 🎨 UI/UX Improvements",
+          "## 📊 Structural Changes",
+          "## ✅ Final QA Checklist"
+        ]
+      },
+      "action": "Write report to data/processed/evaluator_report_{period}.md"
+    },
+    {
+      "step": 7,
+      "name": "inject_report_into_tab4",
+      "description": "Embed the Markdown audit report as content in Tab 4 of app.py.",
+      "action": "Locate the Tab 4 section in app.py. Replace or update the st.markdown call that displays the evaluator report with the path to the new report file."
+    },
+    {
+      "step": 8,
+      "name": "final_validation",
+      "description": "Run a final structural check on app.py to confirm all issues are resolved.",
+      "action": "Parse app.py AST-style to confirm: 4 tabs present, @st.cache_data on all loaders, no bare pd.read_csv/parquet outside cached functions, evaluator report path correct."
+    }
+  ],
+  "mcp_tools_used": [
+    "inspeccionar_esquema_csv",
+    "consultar_datastore_filtrado"
+  ],
+  "output_files": {
+    "audit_report": "data/processed/evaluator_report_{period}.md",
+    "patched_app":  "app.py"
+  },
+  "constraints": [
+    "MUST actively modify code — do not only produce text critique",
+    "MUST cross-verify at least one aggregation metric against raw MCP data",
+    "MUST produce a structured Markdown report with all 6 sections",
+    "MUST ensure Tab 1 has independent 2025 and 1964 sections",
+    "MUST ensure Tabs 2, 3, 4 contain ONLY 2025 data",
+    "NEVER remove @st.cache_data decorators — only add them"
+  ]
+}

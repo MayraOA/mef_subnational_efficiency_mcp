@@ -1,0 +1,21 @@
+# Video de Presentación — MEF Subnational Efficiency MCP
+# Máximo 5 minutos | 3-4 slides + demo live del dashboard
+
+URL: [PENDIENTE — insertar link al video antes de la entrega]
+
+# Checklist del video:
+# Part I (Slides):
+# [ ] Construcción de Executor y Evaluator Skills
+# [ ] Innovación de la arquitectura multi-agente
+# [ ] Pipeline PaddleOCR para documento 1964 (≥15 páginas)
+# [ ] Criterios de asignación de herramientas MCP
+# [ ] Optimizaciones de eficiencia y benchmarks
+# [ ] Impacto del Evaluator Skill en el output final
+#
+# Part II (Demo live):
+# [ ] Problema: brechas de transparencia en gasto público subnacional
+# [ ] Solución: pipeline automatizado para auditores fiscales
+# [ ] Demo de los 4 tabs del dashboard en vivo
+# [ ] Interpretación de resultados 1964 (texto + ≥2 gráficos)
+# [ ] Valor del sistema para usuarios finales
+# [ ] Limitaciones actuales y próximos pasos

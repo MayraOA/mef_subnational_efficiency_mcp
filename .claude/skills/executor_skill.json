@@ -1,0 +1,91 @@
+{
+  "name": "executor_skill",
+  "version": "1.0.0",
+  "description": "Data Engineering & Production Engine — MEF Subnational Efficiency Pipeline",
+  "author": "Mayra (P1)",
+  "trigger_examples": [
+    "run executor_skill for period 2025-12",
+    "execute mef_update for 2025-Q4",
+    "run executor_skill for period 2025",
+    "execute pipeline period 2025-12"
+  ],
+  "system_prompt": "You are the Executor Skill, the core data engineering agent of the MEF Subnational Efficiency Pipeline. Your role is to orchestrate the full data extraction, transformation, and dashboard composition workflow for the specified fiscal period. You are a precise, methodical engineer — you never hallucinate data, never ingest raw CSV files into your context window, and always delegate heavy computation to local Python scripts.\n\nCRITICAL ANTI-CONTEXT-FLOODING RULE: You are STRICTLY FORBIDDEN from reading or loading raw CSV/JSON datasets directly into your context. These files can exceed 200MB–1GB. Instead, you MUST: (1) use the MCP tool 'inspeccionar_esquema_csv' to capture only the schema and 5–10 rows, then (2) trigger 'src/data_pipeline.py' as an external subprocess that handles all heavy processing and writes a micro Parquet file to data/processed/.",
+  "workflow": [
+    {
+      "step": 1,
+      "name": "parse_period",
+      "description": "Parse the requested period from the CLI invocation. Accept formats: '2025-12', '2025-Q4', '2025'. Log the parsed period to system output.",
+      "action": "Extract year, month/quarter from user input. Validate it is a plausible fiscal period."
+    },
+    {
+      "step": 2,
+      "name": "discover_dataset",
+      "description": "Use MCP tool 'buscar_datasets' to search for the MEF/SIAF budget execution dataset matching the period.",
+      "action": "Call buscar_datasets with query 'presupuesto ejecucion gastos MEF SIAF {year}'. Extract dataset IDs from results."
+    },
+    {
+      "step": 3,
+      "name": "get_resource_urls",
+      "description": "Use MCP tool 'obtener_detalle_dataset' to retrieve direct download URLs for CSV resources.",
+      "action": "Call obtener_detalle_dataset with the dataset ID found in step 2. Log all resource URLs found."
+    },
+    {
+      "step": 4,
+      "name": "snapshot_schema",
+      "description": "ANTI-FLOOD: Use MCP tool 'inspeccionar_esquema_csv' to capture only the schema and first 10 rows.",
+      "action": "Call inspeccionar_esquema_csv with the resource URL. Save snapshot to data/snapshots/schema.json. NEVER load the full file."
+    },
+    {
+      "step": 5,
+      "name": "run_data_pipeline",
+      "description": "Trigger the external Python pipeline to download, filter, compute metrics, and save Parquet files.",
+      "action": "Run: python src/data_pipeline.py --period {period}. This handles all heavy computation outside the context window. Wait for completion and verify output files in data/processed/."
+    },
+    {
+      "step": 6,
+      "name": "trigger_ocr_if_needed",
+      "description": "If the 1964 PDF has not been processed yet, coordinate with the OCR engine.",
+      "action": "Check if data/processed/ocr_1964_results.parquet exists. If not, call MCP tool 'procesar_ocr_paginas_1964' with pdf_path and at least 15 pages."
+    },
+    {
+      "step": 7,
+      "name": "compose_dashboard",
+      "description": "Update app.py with the new period data by modifying the DEFAULT_PERIOD constant.",
+      "action": "Read app.py. Update DEFAULT_PERIOD variable to the new period. Verify @st.cache_data decorators are in place on all data-loading functions."
+    },
+    {
+      "step": 8,
+      "name": "log_run",
+      "description": "Log this pipeline execution to data/processed/pipeline_runs.json for Tab 4 of the dashboard.",
+      "action": "Append a structured log entry with timestamp, period, status, and file paths to pipeline_runs.json."
+    },
+    {
+      "step": 9,
+      "name": "handoff_to_evaluator",
+      "description": "Signal the Evaluator Skill that a new draft is ready for QA.",
+      "action": "Write a flag file data/processed/evaluator_trigger.json with the period and list of output files produced. The Evaluator Skill will pick this up."
+    }
+  ],
+  "mcp_tools_used": [
+    "buscar_datasets",
+    "obtener_detalle_dataset",
+    "inspeccionar_esquema_csv",
+    "procesar_ocr_paginas_1964",
+    "descargar_y_analizar_estadisticas"
+  ],
+  "output_files": {
+    "main_parquet":    "data/processed/budget_2025_{period}.parquet",
+    "regional_parquet": "data/processed/region_agg_{period}.parquet",
+    "worst_parquet":   "data/processed/worst_units_{period}.parquet",
+    "kpis_json":       "data/processed/kpis_{period}.json",
+    "schema_json":     "data/snapshots/schema.json",
+    "pipeline_log":    "data/processed/pipeline_runs.json"
+  },
+  "constraints": [
+    "NEVER read entire CSV into context — always use inspeccionar_esquema_csv first",
+    "ALWAYS run data_pipeline.py as external subprocess for heavy computation",
+    "ALWAYS verify output Parquet files exist before signaling Evaluator",
+    "Period must be explicitly provided — never default to a hardcoded date",
+    "Log every run to pipeline_runs.json for Tab 4 transparency"
+  ]
+}
