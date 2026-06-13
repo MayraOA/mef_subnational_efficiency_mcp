@@ -17,18 +17,23 @@ paddleocr>=2.7.3
 paddlepaddle>=2.6.0      # CPU build; use paddlepaddle-gpu for GPU
 pdf2image>=1.16.3        # PDF → image conversion for PaddleOCR
 Pillow>=10.0.0
-poppler-utils            # system dep for pdf2image (install via apt/brew)
+# poppler-utils          # NO es un paquete de PyPI: es dependencia de SISTEMA de pdf2image.
+#                        # Instalar aparte: Ubuntu/Debian `apt-get install poppler-utils`;
+#                        # macOS `brew install poppler`; Windows: binarios de poppler en PATH.
 
 # ── Dashboard ────────────────────────────────────────────────────────────────
 streamlit>=1.35.0
 plotly>=5.20.0
 altair>=5.3.0
+matplotlib>=3.8.0        # requerido por Styler.background_gradient (Tab 3)
 streamlit-extras>=0.4.0  # st.metric con delta styling extra
 
 # ── Geospatial (Tab 2) ────────────────────────────────────────────────────────
-geopandas>=0.14.0
-folium>=0.15.0
-streamlit-folium>=0.20.0
+# El mapa del Tab 2 usa plotly.express.choropleth + un GeoJSON (json puro).
+# No se requieren geopandas/folium; se dejan comentados para mantener el install liviano.
+# geopandas>=0.14.0
+# folium>=0.15.0
+# streamlit-folium>=0.20.0
 
 # ── Optional fast processing ──────────────────────────────────────────────────
 # polars>=0.20.0          # alternativa a pandas para datasets muy grandes

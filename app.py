@@ -132,7 +132,7 @@ def load_kpis(period: str) -> dict:
     path = PROCESSED_DIR / f"kpis_{_safe_period(period)}.json"
     if not path.exists():
         return {"error": f"Ejecutar: python src/data_pipeline.py --period {period}"}
-    return json.loads(path.read_text())
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -675,19 +675,31 @@ with tab4:
         st.info("Sin ejecuciones registradas aún. Lanzar el pipeline para ver el historial.")
     else:
         runs_df = pd.DataFrame(runs)
-        st.dataframe(runs_df, use_container_width=True, height=300)
+        show_cols = [c for c in ["period", "status", "source", "rows", "duration_s", "ended_at"]
+                     if c in runs_df.columns]
+        st.dataframe(runs_df[show_cols] if show_cols else runs_df,
+                     use_container_width=True, height=240, hide_index=True)
 
-        fig_runs = px.timeline(
-            runs_df if "timestamp" in runs_df.columns else pd.DataFrame(),
-            x_start="timestamp" if "timestamp" in runs_df.columns else None,
-            y="period" if "period" in runs_df.columns else None,
-            title="Línea de Tiempo de Ejecuciones",
-            template="plotly_dark",
-        ) if "timestamp" in runs_df.columns else None
-
-        if fig_runs:
-            fig_runs.update_layout(paper_bgcolor="#0d1117")
-            st.plotly_chart(fig_runs, use_container_width=True)
+        # Cronología de ejecuciones (scatter sobre eje temporal; robusto a duraciones dispares).
+        time_col = "ended_at" if "ended_at" in runs_df.columns else (
+            "timestamp" if "timestamp" in runs_df.columns else None)
+        if time_col and "period" in runs_df.columns:
+            tl = runs_df.copy()
+            tl[time_col] = pd.to_datetime(tl[time_col], errors="coerce")
+            tl = tl.dropna(subset=[time_col])
+            if not tl.empty:
+                fig_runs = px.scatter(
+                    tl, x=time_col, y="period",
+                    color="source" if "source" in tl.columns else None,
+                    size="rows" if "rows" in tl.columns else None,
+                    color_discrete_map={"real": "#3fb950", "mock": "#d29922"},
+                    hover_data=[c for c in ["status", "duration_s", "rows"] if c in tl.columns],
+                    title="Cronología de ejecuciones del pipeline",
+                    labels={time_col: "Fecha/hora de ejecución", "period": "Período"},
+                    template="plotly_dark",
+                )
+                fig_runs.update_layout(paper_bgcolor="#0d1117", plot_bgcolor="#161b22", height=300)
+                st.plotly_chart(fig_runs, use_container_width=True)
 
     st.divider()
 

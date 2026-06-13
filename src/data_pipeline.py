@@ -23,6 +23,7 @@ import json
 import logging
 import sys
 import time
+from datetime import datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 
@@ -37,6 +38,10 @@ PROCESSED_DIR = DATA_DIR / "processed"
 
 for d in (SNAPSHOT_DIR, PROCESSED_DIR):
     d.mkdir(parents=True, exist_ok=True)
+
+# Utilidades compartidas (logging de corridas para el Tab 4 del dashboard)
+sys.path.insert(0, str(Path(__file__).parent))
+from utils import log_pipeline_run  # noqa: E402
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -282,7 +287,7 @@ def compute_metrics(df: pd.DataFrame, schema: dict) -> pd.DataFrame:
 
 # ── Step 4: Aggregate & save ───────────────────────────────────────────────────
 
-def aggregate_and_save(df: pd.DataFrame, period: str) -> Path:
+def aggregate_and_save(df: pd.DataFrame, period: str, is_mock: bool = False) -> Path:
     """
     Agrega a nivel región/entidad y guarda como Parquet micro-footprint.
     Archivo: data/processed/budget_2025_{period}.parquet
@@ -333,6 +338,9 @@ def aggregate_and_save(df: pd.DataFrame, period: str) -> Path:
         kpis["avance_nacional_pct"]    = round((kpis["total_devengado"] / kpis["total_PIM"]) * 100, 2)
         kpis["total_saldo_paralizado"] = kpis["total_PIM"] - kpis["total_devengado"]
 
+    if is_mock:
+        kpis["is_mock"] = True  # el sidebar/dashboard marca el período como mock
+
     kpi_path = PROCESSED_DIR / f"kpis_{safe_period}.json"
     kpi_path.write_text(json.dumps(kpis, ensure_ascii=False, indent=2))
     log.info("KPIs guardados: %s", kpi_path)
@@ -342,16 +350,23 @@ def aggregate_and_save(df: pd.DataFrame, period: str) -> Path:
     df.to_parquet(main_out, index=False)
     log.info("Parquet principal: %s (%d filas)", main_out, len(df))
 
-    # Actualizar schema.json con el período procesado
+    # Actualizar schema.json con el período procesado (rutas RELATIVAS al repo:
+    # evita filtrar rutas absolutas de la máquina y mantiene portabilidad).
+    def _rel(p: Path) -> str:
+        try:
+            return p.relative_to(ROOT).as_posix()
+        except ValueError:
+            return p.as_posix()
+
     schema_path = SNAPSHOT_DIR / "schema.json"
     if schema_path.exists():
-        s = json.loads(schema_path.read_text())
+        s = json.loads(schema_path.read_text(encoding="utf-8"))
         s["last_processed_period"] = period
         s["output_files"] = {
-            "main":    str(main_out),
-            "regional": str(PROCESSED_DIR / f"region_agg_{safe_period}.parquet"),
-            "worst":   str(PROCESSED_DIR / f"worst_units_{safe_period}.parquet"),
-            "kpis":    str(kpi_path),
+            "main":    _rel(main_out),
+            "regional": _rel(PROCESSED_DIR / f"region_agg_{safe_period}.parquet"),
+            "worst":   _rel(PROCESSED_DIR / f"worst_units_{safe_period}.parquet"),
+            "kpis":    _rel(kpi_path),
         }
         # Contrato de columnas para P3
         s["output_schema"] = {
@@ -363,7 +378,7 @@ def aggregate_and_save(df: pd.DataFrame, period: str) -> Path:
                 "avance_pct": "float64", "saldo_no_devengado": "float64",
             }
         }
-        schema_path.write_text(json.dumps(s, ensure_ascii=False, indent=2))
+        schema_path.write_text(json.dumps(s, ensure_ascii=False, indent=2), encoding="utf-8")
 
     return main_out
 
@@ -439,6 +454,62 @@ def generate_mock_data(period: str) -> pd.DataFrame:
     return df
 
 
+# ── Handshake executor → evaluator + log de corridas ──────────────────────────
+
+def _finalize_run(period: str, out: Path, df: pd.DataFrame, elapsed: float, use_mock: bool) -> None:
+    """Paso 8 (log_run) y paso 9 (handshake) del executor_skill.
+
+    - Escribe ``evaluator_trigger.json`` para señalar al Evaluator Skill que hay un
+      nuevo draft listo para QA.
+    - Registra la corrida en ``pipeline_runs.json`` para el Tab 4 (Audit Log).
+    """
+    safe   = period.replace(" ", "_").replace("/", "-")
+    source = "mock" if use_mock else "real"
+    end_dt   = datetime.now()
+    start_dt = end_dt - timedelta(seconds=max(elapsed, 0.0))
+
+    def _rel(p: Path) -> str:
+        """Ruta relativa al repo (POSIX) para no filtrar rutas absolutas de la máquina."""
+        try:
+            return p.relative_to(ROOT).as_posix()
+        except ValueError:
+            return p.as_posix()
+
+    outputs = {
+        "main":     _rel(PROCESSED_DIR / f"budget_2025_{safe}.parquet"),
+        "regional": _rel(PROCESSED_DIR / f"region_agg_{safe}.parquet"),
+        "worst":    _rel(PROCESSED_DIR / f"worst_units_{safe}.parquet"),
+        "kpis":     _rel(PROCESSED_DIR / f"kpis_{safe}.json"),
+    }
+
+    # Paso 9 — trigger para el Evaluator Skill
+    trigger = {
+        "period":                 period,
+        "executor_run_timestamp": end_dt.isoformat(timespec="seconds"),
+        "status":                 "ready_for_qa",
+        "source":                 source,
+        "output_files":           outputs,
+    }
+    try:
+        (PROCESSED_DIR / "evaluator_trigger.json").write_text(
+            json.dumps(trigger, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as e:  # noqa: BLE001
+        log.warning("No se pudo escribir evaluator_trigger.json: %s", e)
+
+    # Paso 8 — log de la corrida (Tab 4 — Audit Log)
+    try:
+        log_pipeline_run(period, "success", {
+            "source":      source,
+            "rows":        int(len(df)) if df is not None else 0,
+            "duration_s":  round(elapsed, 2),
+            "started_at":  start_dt.isoformat(timespec="seconds"),
+            "ended_at":    end_dt.isoformat(timespec="seconds"),
+            "main_output": outputs["main"],
+        })
+    except Exception as e:  # noqa: BLE001
+        log.warning("No se pudo registrar la corrida en pipeline_runs.json: %s", e)
+
+
 # ── Main entry point ───────────────────────────────────────────────────────────
 
 def run_pipeline(period: str, use_mock: bool = False):
@@ -451,7 +522,7 @@ def run_pipeline(period: str, use_mock: bool = False):
     if use_mock:
         log.info("Modo MOCK activado.")
         df = generate_mock_data(period)
-        out = aggregate_and_save(df, period)
+        out = aggregate_and_save(df, period, is_mock=True)
     else:
         try:
             schema = fetch_snapshot(MEF_RESOURCE_URL)
@@ -469,6 +540,9 @@ def run_pipeline(period: str, use_mock: bool = False):
 
     elapsed = time.perf_counter() - t_total
     log.info("Pipeline completado en %.1fs → %s", elapsed, out)
+
+    # Cooperación executor → evaluator (handshake) + log de la corrida (Tab 4)
+    _finalize_run(period, out, df, elapsed, use_mock)
     return out
 
 
