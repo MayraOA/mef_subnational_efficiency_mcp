@@ -207,9 +207,9 @@ Merge exclusivamente vía **Pull Requests** con descripción del cambio.
 
 | Persona | Responsabilidad |
 |---------|----------------|
-| Mayra (P1) | MCP Server + Pipeline 2025 + Skills JSON |
+| Mayra  (P1) | MCP Server + Pipeline 2025 + Skills JSON |
 | Camila (P2) | OCR Engine 1964 + Tab 1 del Dashboard |
-| P3 | Tabs 2-4 + Evaluator + Video |
+| Manuel (P3) | Tabs 2-4 + Evaluator + Video |
 
 ---
 
