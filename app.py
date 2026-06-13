@@ -141,7 +141,7 @@ def load_ocr_1964() -> dict:
     path = PROCESSED_DIR / "ocr_1964_results.json"
     if not path.exists():
         return {}
-    return json.loads(path.read_text())
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -159,7 +159,7 @@ def load_pipeline_runs() -> list:
     if not path.exists():
         return []
     try:
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return []
 
@@ -169,7 +169,7 @@ def load_evaluator_report(period: str) -> str:
     path = PROCESSED_DIR / f"evaluator_report_{_safe_period(period)}.md"
     if not path.exists():
         return "_Reporte del Evaluator Skill pendiente. Ejecutar `claude \"run evaluator_skill\"`._"
-    return path.read_text()
+    return path.read_text(encoding="utf-8")
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -316,9 +316,9 @@ al 40% requieren intervención prioritaria de la Contraloría General de la Rep�
             c3.metric("Ítems cuantificados", stats.get("items_quantified", 0))
 
         # ── Gráfico 1 (completado por P2) ─────────────────────────────────────
-        if "categories_df" in ocr_frames:
+        if "1964_categories_df" in ocr_frames:
             st.markdown("#### 📊 Gráfico 1 — Categorías Presupuestarias 1964")
-            cat_df = ocr_frames["categories_df"]
+            cat_df = ocr_frames["1964_categories_df"]
             # P2 definirá las columnas exactas según el OCR
             if not cat_df.empty:
                 fig1 = px.bar(
@@ -333,9 +333,9 @@ al 40% requieren intervención prioritaria de la Contraloría General de la Rep�
                 st.plotly_chart(fig1, use_container_width=True)
 
         # ── Gráfico 2 (completado por P2) ─────────────────────────────────────
-        if "departments_df" in ocr_frames:
+        if "1964_departments_df" in ocr_frames:
             st.markdown("#### 📊 Gráfico 2 — Distribución Departamental 1964")
-            dep_df = ocr_frames["departments_df"]
+            dep_df = ocr_frames["1964_departments_df"]
             if not dep_df.empty:
                 fig2 = px.pie(
                     dep_df,
@@ -345,7 +345,7 @@ al 40% requieren intervención prioritaria de la Contraloría General de la Rep�
                     color_discrete_sequence=px.colors.sequential.Oranges,
                     template="plotly_dark",
                 )
-                fig2.update_layout(paper_bgcolor="#1c2128")
+                fig2.update_layout(paper_bgcolor="#1c2128", font=dict(color="#e6edf3"))
                 st.plotly_chart(fig2, use_container_width=True)
 
     st.markdown('</div>', unsafe_allow_html=True)

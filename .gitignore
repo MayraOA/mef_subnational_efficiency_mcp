@@ -1,13 +1,18 @@
-# Entorno virtual
+# Entornos virtuales
+.venv/
 venv/
+env/
 
-# Datos procesados (muy pesados)
-data/processed/
-data/raw_pdfs/
-logs/
-
-# Python
+# Cachés de Python
 __pycache__/
-*.pyc
-*.pyo
-.DS_Store
+*.py[cod]
+*.egg-info/
+
+# Datos crudos pesados (no se commitean; sí los processed/)
+data/raw_pdfs/
+
+# Logs
+*.log
+
+# Modelos descargados de PaddleOCR/PaddleX
+.paddlex/
