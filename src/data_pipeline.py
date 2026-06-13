@@ -18,6 +18,7 @@ CLI Usage (via Claude Code):
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import logging
 import sys
@@ -47,18 +48,18 @@ log = logging.getLogger(__name__)
 # ── MEF / SIAF Dataset config ─────────────────────────────────────────────────
 # URL semilla: Consulta Amigable SIAF — ajustar si el portal actualiza el recurso
 MEF_RESOURCE_URL = (
-    "https://datosabiertos.gob.pe/sites/default/files/recurso/"
-    "consulta_amigable/ejecucion_gastos_2025.csv"
+    "https://fs.datosabiertos.mef.gob.pe/datastorefiles/"
+    "2025-Gasto-Devengado-Mensual.csv"
 )
 
 # Columnas clave del esquema SIAF (validadas contra snapshot)
 COL_MAP = {
-    "region":       ["DEPARTAMENTO", "REGION", "Departamento", "departamento"],
-    "entidad":      ["ENTIDAD", "NOMBRE_ENTIDAD", "entidad", "PLIEGO"],
-    "PIM":          ["PIM", "Presupuesto_Institucional_Modificado", "pim"],
-    "devengado":    ["DEVENGADO", "Devengado", "devengado", "EJECUTADO"],
-    "nivel_gobierno": ["NIVEL_GOBIERNO", "Nivel_Gobierno", "nivel"],
-    "funcion":      ["FUNCION", "Funcion", "funcion", "CATEGORIA_GASTO"],
+    "region":         ["DEPARTAMENTO_EJECUTORA_NOMBRE"],
+    "entidad":        ["EJECUTORA_NOMBRE", "PLIEGO_NOMBRE"],
+    "PIM":            ["MONTO_PIM"],
+    "devengado":      ["MONTO_DEVENGADO_ANUAL"],
+    "nivel_gobierno": ["NIVEL_GOBIERNO_NOMBRE"],
+    "funcion":        ["FUNCION_NOMBRE"],
 }
 
 # Mínimo de presupuesto para incluir unidades ejecutoras (10M PEN)
@@ -89,6 +90,44 @@ def _normalize_period(period: str) -> dict:
     return {"year": int(p)}
 
 
+# ── Streaming helper ──────────────────────────────────────────────────────────
+
+class _ProgressStream(io.RawIOBase):
+    """Feeds HTTP iter_bytes() to pandas read_csv() while logging progress every N bytes."""
+
+    def __init__(self, iter_bytes, log_fn, report_every: int = 50 * 1024 * 1024):
+        self._iter     = iter_bytes
+        self._buf      = bytearray()
+        self._downloaded = 0
+        self._log      = log_fn
+        self._step     = report_every
+        self._last_log = 0
+        self._done     = False
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, b) -> int:
+        target = len(b)
+        while len(self._buf) < target and not self._done:
+            try:
+                chunk = next(self._iter)
+            except StopIteration:
+                self._done = True
+                break
+            self._buf.extend(chunk)
+            self._downloaded += len(chunk)
+            if self._downloaded - self._last_log >= self._step:
+                self._last_log = self._downloaded
+                self._log("  %.0f MB descargados…", self._downloaded / 1e6)
+        n = min(target, len(self._buf))
+        if n == 0:
+            return 0
+        b[:n] = self._buf[:n]
+        del self._buf[:n]
+        return n
+
+
 # ── Step 1: Snapshot ───────────────────────────────────────────────────────────
 
 def fetch_snapshot(url: str, n: int = 10) -> dict:
@@ -99,6 +138,7 @@ def fetch_snapshot(url: str, n: int = 10) -> dict:
     log.info("Inspeccionando esquema (primeras %d filas)…", n)
     t0 = time.perf_counter()
 
+    detected_enc = "utf-8"
     for enc in ("utf-8", "latin-1", "cp1252"):
         try:
             with httpx.stream("GET", url, follow_redirects=True, timeout=60) as r:
@@ -106,10 +146,10 @@ def fetch_snapshot(url: str, n: int = 10) -> dict:
                 chunks = b""
                 for chunk in r.iter_bytes(chunk_size=8192):
                     chunks += chunk
-                    # Leer suficientes líneas
                     if chunks.count(b"\n") >= n + 2:
                         break
             df_snap = pd.read_csv(BytesIO(chunks), nrows=n, encoding=enc, low_memory=False)
+            detected_enc = enc
             break
         except Exception as e:
             log.warning("Encoding %s falló: %s", enc, e)
@@ -122,6 +162,7 @@ def fetch_snapshot(url: str, n: int = 10) -> dict:
         "dtypes":  {c: str(t) for c, t in df_snap.dtypes.items()},
         "sample":  df_snap.head(5).to_dict(orient="records"),
         "source_url": url,
+        "encoding": detected_enc,
         # Contrato para P3: nombres normalizados de columnas
         "normalized_columns": {
             "region":         _resolve_col(df_snap, COL_MAP["region"]),
@@ -143,66 +184,51 @@ def fetch_snapshot(url: str, n: int = 10) -> dict:
 
 def download_and_filter(url: str, schema: dict, period_info: dict) -> pd.DataFrame:
     """
-    Descarga el CSV en chunks de 50k filas para evitar saturación de memoria.
+    Hace streaming del CSV directamente a pandas sin acumular en memoria.
     Filtra: nivel subnacional + PIM > MIN_PIM_SOL.
     """
     log.info("Descargando y filtrando datos MEF 2025 — período %s…", period_info)
     t0 = time.perf_counter()
 
     nc    = schema["normalized_columns"]
-    col_r = nc["region"]
-    col_e = nc["entidad"]
     col_p = nc["PIM"]
-    col_d = nc["devengado"]
     col_n = nc["nivel_gobierno"]
-    col_f = nc["funcion"]
+    enc   = schema.get("encoding", "utf-8")
 
     frames = []
-    chunk_size = 50_000
 
-    # Descargar completo y procesar en chunks
-    log.info("Descargando CSV completo (puede tardar)…")
+    log.info("Iniciando streaming desde MEF (encoding: %s)…", enc)
     with httpx.stream("GET", url, follow_redirects=True, timeout=300) as r:
         r.raise_for_status()
-        raw = b"".join(r.iter_bytes())
-
-    log.info("Descarga completa: %.1f MB. Procesando en chunks…", len(raw) / 1e6)
-
-    for enc in ("utf-8", "latin-1", "cp1252"):
-        try:
-            reader = pd.read_csv(
-                BytesIO(raw),
-                chunksize=chunk_size,
-                encoding=enc,
-                low_memory=False,
-                on_bad_lines="skip",
-            )
-            for chunk in reader:
-                # Filtrar nivel subnacional (gobierno regional/local)
-                if col_n and col_n in chunk.columns:
-                    mask_nivel = chunk[col_n].astype(str).str.upper().str.contains(
-                        r"REGIONAL|LOCAL|MUNICIPAL|GOBIERN", regex=True, na=False
-                    )
-                    chunk = chunk[mask_nivel]
-
-                # Filtrar PIM > 10M
-                if col_p and col_p in chunk.columns:
-                    chunk[col_p] = pd.to_numeric(chunk[col_p], errors="coerce").fillna(0)
-                    chunk = chunk[chunk[col_p] >= MIN_PIM_SOL]
-
-                if not chunk.empty:
-                    frames.append(chunk)
-            break
-        except Exception as e:
-            log.warning("Error con encoding %s: %s", enc, e)
-            continue
+        stream = _ProgressStream(r.iter_bytes(chunk_size=65_536), log.info)
+        reader = pd.read_csv(
+            io.BufferedReader(stream),
+            chunksize=50_000,
+            encoding=enc,
+            low_memory=False,
+            on_bad_lines="skip",
+        )
+        for chunk in reader:
+            if col_n and col_n in chunk.columns:
+                mask = chunk[col_n].astype(str).str.upper().str.contains(
+                    r"REGIONAL|LOCAL", regex=True, na=False
+                )
+                chunk = chunk[mask]
+            if col_p and col_p in chunk.columns:
+                chunk[col_p] = pd.to_numeric(chunk[col_p], errors="coerce").fillna(0)
+                chunk = chunk[chunk[col_p] >= MIN_PIM_SOL]
+            if not chunk.empty:
+                frames.append(chunk)
 
     if not frames:
         log.warning("Sin datos tras el filtro. Verificar URL o criterios.")
         return pd.DataFrame()
 
     df = pd.concat(frames, ignore_index=True)
-    log.info("Filas tras filtro: %d (%.2fs)", len(df), time.perf_counter() - t0)
+    log.info(
+        "Streaming completo: %.0f MB, %d filas tras filtro (%.2fs)",
+        stream._downloaded / 1e6, len(df), time.perf_counter() - t0,
+    )
     return df
 
 
