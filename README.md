@@ -15,7 +15,7 @@ Claude Code CLI
       └── evaluator_skill.json →  Audita, optimiza y pule el output del Executor
               │
               ▼
-      src/mcp_server.py        →  Servidor MCP local (10 herramientas CKAN + OCR)
+      src/mcp_server.py        →  Servidor MCP local (7 herramientas CKAN + OCR)
               │
       ┌───────┴────────┐
       │                │
@@ -42,7 +42,14 @@ cd mef_subnational_efficiency_mcp
 pip install -r requirements.txt
 ```
 
-> Para Ubuntu/Debian: `sudo apt-get install poppler-utils` (requerido por pdf2image)
+> **Poppler** es una dependencia de **sistema** (no de PyPI) que usa `pdf2image` en el track OCR:
+> - Ubuntu/Debian: `sudo apt-get install poppler-utils`
+> - macOS: `brew install poppler`
+> - Windows: descargar los binarios de Poppler y añadirlos al `PATH`
+>
+> El dashboard (Tabs 1-4) corre solo con `requirements.txt`. El track OCR 1964 además requiere
+> `paddleocr`/`paddlepaddle` (ya incluidos) + Poppler; sus resultados ya vienen procesados en
+> `data/processed/`, así que no es necesario re-ejecutarlo para ver el dashboard.
 
 ### 2. Iniciar el MCP Server
 
@@ -86,7 +93,7 @@ mef_subnational_efficiency_mcp/
 │       └── evaluator_skill.json       # Skill de auditoría y optimización
 │
 ├── src/
-│   ├── mcp_server.py                  # Servidor MCP local (10 herramientas)
+│   ├── mcp_server.py                  # Servidor MCP local (7 herramientas)
 │   ├── data_pipeline.py               # Pipeline 2025: snapshot → filter → Parquet
 │   ├── ocr_engine.py                  # PaddleOCR — mínimo 15 páginas del PDF 1964
 │   ├── analytical_engine.py           # Métricas fiscales y agrupaciones
@@ -137,6 +144,31 @@ Los resultados se presentan de forma **completamente independiente** en el Tab 1
 
 ---
 
+## Dashboard (4 tabs)
+
+| Tab | Contenido | Datos |
+|-----|-----------|-------|
+| **1 · Resumen Ejecutivo** | KPIs 2025 (`st.metric`) + sección histórica 1964 independiente (texto + ≥2 gráficos) | 2025 + 1964 (separados) |
+| **2 · Distribución Territorial** | Coropleta de avance de ejecución + **heatmap de riesgo social** (estancamiento del gasto social × pobreza) + cuadrante de auditoría | Solo 2025 |
+| **3 · Hall of Shame** | Tabla interactiva de peores unidades (PIM > S/ 10M) + desglose por función | Solo 2025 |
+| **4 · Audit Log & Playground** | Reporte del Evaluator Skill + cronología de corridas + playground period-driven | Solo 2025 |
+
+**Mapas (Tab 2):** se construyen con `plotly.express.choropleth` a nivel **departamental** sobre
+`data/geo/peru_departamentos.geojson` (no se requiere geopandas/folium). El join SIAF↔GeoJSON usa
+normalización NFKD (tildes → ASCII), cobertura 24/24.
+
+**Índice de riesgo social** = `minmax(% no ejecutado en funciones sociales 2025)` × `minmax(pobreza 2025)`:
+- *Estancamiento social*: derivado 100% del SIAF 2025 (funciones salud, educación, saneamiento,
+  protección social, vivienda).
+- *Vulnerabilidad*: pobreza monetaria 2025 por departamento — **INEI, "Perú: Evolución de la
+  Pobreza Monetaria 2016-2025"** (publicado 05-may-2026; `data/geo/pobreza_monetaria_2025.csv`,
+  punto medio de los grupos del Cuadro 4.2 con IC al 95%).
+
+> Todas las pestañas 2-4 usan **exclusivamente datos modernos (2025)**; la era 1964 vive solo en el
+> Tab 1. El render de cada pestaña usa `@st.cache_data` para tiempos sub-segundo.
+
+---
+
 ## Contrato de Esquema (Para integración P1 ↔ P3)
 
 ```json
@@ -175,9 +207,9 @@ Merge exclusivamente vía **Pull Requests** con descripción del cambio.
 
 | Persona | Responsabilidad |
 |---------|----------------|
-| Mayra (P1) | MCP Server + Pipeline 2025 + Skills JSON |
+| Mayra  (P1) | MCP Server + Pipeline 2025 + Skills JSON |
 | Camila (P2) | OCR Engine 1964 + Tab 1 del Dashboard |
-| P3 | Tabs 2-4 + Evaluator + Video |
+| Manuel (P3) | Tabs 2-4 + Evaluator + Video |
 
 ---
 

@@ -1,0 +1,35 @@
+[
+  {
+    "timestamp": "2026-06-13T16:22:06",
+    "period": "2025-12",
+    "status": "success",
+    "source": "real",
+    "rows": 500,
+    "duration_s": 612.4,
+    "started_at": "2026-06-13T16:11:54",
+    "ended_at": "2026-06-13T16:22:06",
+    "main_output": "data/processed/budget_2025_2025-12.parquet"
+  },
+  {
+    "timestamp": "2026-06-13T17:46:34.699011",
+    "period": "2025-Q3",
+    "status": "success",
+    "source": "mock",
+    "rows": 500,
+    "duration_s": 0.08,
+    "started_at": "2026-06-13T17:46:34",
+    "ended_at": "2026-06-13T17:46:34",
+    "main_output": "data/processed/budget_2025_2025-Q3.parquet"
+  },
+  {
+    "timestamp": "2026-06-13T17:46:35.773191",
+    "period": "2025-Q2",
+    "status": "success",
+    "source": "mock",
+    "rows": 500,
+    "duration_s": 0.07,
+    "started_at": "2026-06-13T17:46:35",
+    "ended_at": "2026-06-13T17:46:35",
+    "main_output": "data/processed/budget_2025_2025-Q2.parquet"
+  }
+]

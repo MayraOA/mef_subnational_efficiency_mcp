@@ -1,0 +1,12 @@
+{
+  "period": "2025-12",
+  "executor_run_timestamp": "2026-06-13T16:22:06",
+  "status": "ready_for_qa",
+  "source": "real",
+  "output_files": {
+    "main": "data/processed/budget_2025_2025-12.parquet",
+    "regional": "data/processed/region_agg_2025-12.parquet",
+    "worst": "data/processed/worst_units_2025-12.parquet",
+    "kpis": "data/processed/kpis_2025-12.json"
+  }
+}

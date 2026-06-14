@@ -14,6 +14,7 @@ All data loaders use @st.cache_data for sub-second renders.
 from __future__ import annotations
 
 import json
+import unicodedata
 from pathlib import Path
 
 import pandas as pd
@@ -25,6 +26,7 @@ import streamlit as st
 ROOT          = Path(__file__).parent
 PROCESSED_DIR = ROOT / "data" / "processed"
 SNAPSHOT_DIR  = ROOT / "data" / "snapshots"
+GEO_DIR       = ROOT / "data" / "geo"
 
 # ── Period config (executor_skill updates this value) ─────────────────────────
 DEFAULT_PERIOD = "2025-12"
@@ -102,6 +104,27 @@ def _pen(v: float) -> str:
     return f"S/ {v:,.0f}"
 
 
+def _norm_dep(name: str) -> str:
+    """Normaliza un nombre (NFKD → ASCII → MAYÚSCULAS) para hacer joins robustos.
+
+    Los datos del SIAF traen tildes (p.ej. ``APURÍMAC``, ``EDUCACIÓN``) mientras que
+    el GeoJSON usa ASCII (``APURIMAC``); normalizar ambos lados da una cobertura 24/24.
+    """
+    if not isinstance(name, str):
+        return ""
+    return (
+        unicodedata.normalize("NFKD", name)
+        .encode("ascii", "ignore")
+        .decode()
+        .strip()
+        .upper()
+    )
+
+
+# Funciones de gasto consideradas "sociales" (clave normalizada → substring match)
+SOCIAL_FUNC_KEYS = ("SALUD", "EDUCAC", "SANEAM", "PROTECC", "VIVIENDA")
+
+
 # ── Data loaders (ALL must use @st.cache_data) ────────────────────────────────
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -109,7 +132,7 @@ def load_kpis(period: str) -> dict:
     path = PROCESSED_DIR / f"kpis_{_safe_period(period)}.json"
     if not path.exists():
         return {"error": f"Ejecutar: python src/data_pipeline.py --period {period}"}
-    return json.loads(path.read_text())
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -170,6 +193,66 @@ def load_evaluator_report(period: str) -> str:
     if not path.exists():
         return "_Reporte del Evaluator Skill pendiente. Ejecutar `claude \"run evaluator_skill\"`._"
     return path.read_text(encoding="utf-8")
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_geojson() -> dict:
+    """GeoJSON de departamentos del Perú (propiedad de nombre: NOMBDEP, en ASCII)."""
+    path = GEO_DIR / "peru_departamentos.geojson"
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_pobreza_2025() -> pd.DataFrame:
+    """Pobreza monetaria 2025 por departamento (INEI, Cuadro 4.2 — punto medio del grupo).
+
+    Fuente: INEI, "Perú: Evolución de la Pobreza Monetaria 2016-2025" (publicado 05-may-2026).
+    INEI agrupa los departamentos en bandas con niveles estadísticamente semejantes (IC 95%);
+    se usa el punto medio del intervalo de cada grupo como valor del departamento.
+    """
+    path = GEO_DIR / "pobreza_monetaria_2025.csv"
+    if not path.exists():
+        return pd.DataFrame()
+    df = pd.read_csv(path)
+    df["dep"] = df["departamento"].map(_norm_dep)
+    return df
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def compute_social_stagnation(period: str) -> pd.DataFrame:
+    """Estancamiento del gasto en funciones SOCIALES por departamento (100% SIAF 2025).
+
+    Mide el % no ejecutado (1 − Devengado/PIM) restringido a las funciones de salud,
+    educación, saneamiento, protección social y vivienda — un proxy del gasto social
+    paralizado, derivado exclusivamente de los datos 2025.
+    """
+    df = load_budget(period)
+    if df.empty or "funcion" not in df.columns or "region" not in df.columns:
+        return pd.DataFrame()
+    norm_f = df["funcion"].map(_norm_dep)
+    mask = norm_f.apply(lambda f: any(k in f for k in SOCIAL_FUNC_KEYS))
+    soc = df[mask].copy()
+    if soc.empty:
+        return pd.DataFrame()
+    soc["dep"] = soc["region"].map(_norm_dep)
+    agg = soc.groupby("dep", as_index=False).agg(
+        PIM_social=("PIM", "sum"),
+        dev_social=("devengado", "sum"),
+    )
+    agg["no_ejec_social_pct"] = (
+        (1 - agg["dev_social"] / agg["PIM_social"]).where(agg["PIM_social"] > 0, 0.0) * 100
+    )
+    return agg
+
+
+def _minmax(s: pd.Series) -> pd.Series:
+    """Normaliza una serie a 0-1 (robusta a rango cero)."""
+    lo, hi = s.min(), s.max()
+    if pd.isna(lo) or hi == lo:
+        return pd.Series([0.0] * len(s), index=s.index)
+    return (s - lo) / (hi - lo)
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -359,63 +442,145 @@ with tab2:
     st.header("🗺️ Distribución Territorial — Perú 2025")
     st.caption("Análisis geoespacial de ejecución presupuestal por departamento · Solo datos 2025")
 
-    # ── COMPLETAR POR P3 ──────────────────────────────────────────────────────
-    with st.spinner("Cargando datos territoriales…"):
-        df_regional = load_regional(selected_period)
+    # try/except: Streamlit ejecuta todos los tabs en una pasada; un fallo aquí no
+    # debe tumbar los Tabs 3 y 4.
+    try:
+        with st.spinner("Cargando datos territoriales…"):
+            df_regional = load_regional(selected_period)
+            geojson = load_geojson()
 
-    if df_regional.empty:
-        st.info(f"Sin datos para período {selected_period}. Ejecutar el pipeline primero.")
-    else:
-        # KPIs territoriales rápidos
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Regiones analizadas", len(df_regional))
-        worst_reg = df_regional.nsmallest(1, "avance_pct").iloc[0] if not df_regional.empty else None
-        if worst_reg is not None:
-            col2.metric("Región más rezagada", worst_reg.get("region", "—"),
-                        delta=f"{worst_reg.get('avance_pct', 0):.1f}%", delta_color="inverse")
-        best_reg = df_regional.nlargest(1, "avance_pct").iloc[0] if not df_regional.empty else None
-        if best_reg is not None:
-            col3.metric("Región líder", best_reg.get("region", "—"),
-                        delta=f"{best_reg.get('avance_pct', 0):.1f}%")
+        if df_regional.empty:
+            st.info(f"Sin datos para período {selected_period}. Ejecutar el pipeline primero.")
+        elif not geojson:
+            st.warning("Falta el GeoJSON de departamentos en `data/geo/peru_departamentos.geojson`.")
+        else:
+            # Clave de join normalizada (SIAF con tildes ↔ GeoJSON en ASCII)
+            df_geo = df_regional.copy()
+            df_geo["dep"] = df_geo["region"].map(_norm_dep)
 
-        # Gráfico base — P3 puede enriquecer con mapa geoespacial
-        fig_bar = px.bar(
-            df_regional.sort_values("avance_pct", ascending=True),
-            x="avance_pct",
-            y="region",
-            orientation="h",
-            color="avance_pct",
-            color_continuous_scale=["#f85149", "#d29922", "#3fb950"],
-            title=f"Avance de Ejecución por Región — {selected_period}",
-            labels={"avance_pct": "Avance (%)", "region": "Región"},
-            template="plotly_dark",
-        )
-        fig_bar.add_vline(x=60, line_dash="dash", line_color="white",
-                          annotation_text="Meta 60%", annotation_position="top right")
-        fig_bar.update_layout(
-            paper_bgcolor="#0d1117", plot_bgcolor="#161b22",
-            height=600, showlegend=False,
-        )
-        st.plotly_chart(fig_bar, use_container_width=True)
+            geo_deps = {f["properties"]["NOMBDEP"].strip().upper() for f in geojson["features"]}
+            matched = set(df_geo["dep"]) & geo_deps
+            if len(matched) < df_geo["dep"].nunique():
+                faltan = sorted(set(df_geo["dep"]) - geo_deps)
+                st.warning(f"⚠️ Solo {len(matched)} departamentos cruzaron con el mapa. Sin geometría: {faltan}")
 
-        # Heatmap saldo paralizado — P3 puede añadir capa de vulnerabilidad social
-        fig_heat = px.scatter(
-            df_regional,
-            x="avance_pct",
-            y="saldo_no_devengado",
-            size="PIM",
-            color="avance_pct",
-            color_continuous_scale=["#f85149", "#d29922", "#3fb950"],
-            hover_name="region",
-            title=f"Capital Paralizado vs Avance — {selected_period}",
-            labels={"avance_pct": "Avance (%)", "saldo_no_devengado": "Saldo No Devengado (S/)"},
-            template="plotly_dark",
-        )
-        fig_heat.update_layout(paper_bgcolor="#0d1117", plot_bgcolor="#161b22")
-        st.plotly_chart(fig_heat, use_container_width=True)
+            # ── KPIs territoriales ────────────────────────────────────────────
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Departamentos analizados", df_geo["dep"].nunique())
+            worst_reg = df_geo.nsmallest(1, "avance_pct").iloc[0]
+            col2.metric("Más rezagado", worst_reg["region"],
+                        delta=f"{worst_reg['avance_pct']:.1f}%", delta_color="inverse")
+            best_reg = df_geo.nlargest(1, "avance_pct").iloc[0]
+            col3.metric("Líder", best_reg["region"], delta=f"{best_reg['avance_pct']:.1f}%")
 
-        st.markdown("---")
-        st.markdown("*P3: Aquí agregar mapa geoespacial con geopandas/folium y heatmap de vulnerabilidad social.*")
+            # ── MAPA 1 — Desempeño de ejecución 2025 ──────────────────────────
+            st.subheader("Mapa 1 · Desempeño de ejecución por departamento")
+            fig_map1 = px.choropleth(
+                df_geo,
+                geojson=geojson,
+                locations="dep",
+                featureidkey="properties.NOMBDEP",
+                color="avance_pct",
+                color_continuous_scale=["#f85149", "#d29922", "#3fb950"],
+                range_color=(0, 100),
+                hover_name="region",
+                hover_data={"dep": False, "PIM": ":,.0f", "devengado": ":,.0f",
+                            "avance_pct": ":.1f", "saldo_no_devengado": ":,.0f"},
+                labels={"avance_pct": "Avance (%)"},
+                title=f"Avance de ejecución (Devengado/PIM) — {selected_period}",
+            )
+            fig_map1.update_geos(fitbounds="locations", visible=False)
+            fig_map1.update_layout(paper_bgcolor="#0d1117", font_color="#e6edf3",
+                                   margin=dict(l=0, r=0, t=50, b=0), height=520)
+            st.plotly_chart(fig_map1, use_container_width=True)
+
+            with st.expander("Ver ranking por departamento (barra)"):
+                fig_bar = px.bar(
+                    df_geo.sort_values("avance_pct"),
+                    x="avance_pct", y="region", orientation="h", color="avance_pct",
+                    color_continuous_scale=["#f85149", "#d29922", "#3fb950"], range_color=(0, 100),
+                    title=f"Avance de ejecución por departamento — {selected_period}",
+                    labels={"avance_pct": "Avance (%)", "region": "Departamento"},
+                    template="plotly_dark",
+                )
+                fig_bar.add_vline(x=60, line_dash="dash", line_color="white",
+                                  annotation_text="Meta 60%", annotation_position="top right")
+                fig_bar.update_layout(paper_bgcolor="#0d1117", plot_bgcolor="#161b22",
+                                      height=600, showlegend=False)
+                st.plotly_chart(fig_bar, use_container_width=True)
+
+            # ── MAPA 2 — Riesgo social: estancamiento × vulnerabilidad ────────
+            st.subheader("Mapa 2 · Riesgo social — estancamiento del gasto social × pobreza 2025")
+            st.caption(
+                "Estancamiento social = % no ejecutado en salud, educación, saneamiento, protección "
+                "social y vivienda (SIAF 2025). Vulnerabilidad = pobreza monetaria 2025 (INEI, grupos "
+                "del Cuadro 4.2; punto medio del intervalo)."
+            )
+
+            social  = compute_social_stagnation(selected_period)
+            pobreza = load_pobreza_2025()
+            if social.empty or pobreza.empty:
+                st.info("No hay datos de funciones sociales o de pobreza para construir el índice de riesgo.")
+            else:
+                risk = social.merge(
+                    pobreza[["dep", "pobreza_pct", "pobreza_inf", "pobreza_sup", "grupo_inei"]],
+                    on="dep", how="inner",
+                ).merge(df_geo[["dep", "region", "avance_pct", "PIM"]], on="dep", how="left")
+                risk["riesgo_social"] = _minmax(risk["no_ejec_social_pct"]) * _minmax(risk["pobreza_pct"])
+
+                fig_map2 = px.choropleth(
+                    risk,
+                    geojson=geojson,
+                    locations="dep",
+                    featureidkey="properties.NOMBDEP",
+                    color="riesgo_social",
+                    color_continuous_scale="Inferno",
+                    hover_name="region",
+                    hover_data={"dep": False, "no_ejec_social_pct": ":.1f",
+                                "pobreza_pct": ":.1f", "riesgo_social": ":.2f"},
+                    labels={"riesgo_social": "Índice de riesgo"},
+                    title="Índice de riesgo social (0–1) — mayor = más crítico",
+                )
+                fig_map2.update_geos(fitbounds="locations", visible=False)
+                fig_map2.update_layout(paper_bgcolor="#0d1117", font_color="#e6edf3",
+                                       margin=dict(l=0, r=0, t=50, b=0), height=520)
+                st.plotly_chart(fig_map2, use_container_width=True)
+
+                # ── Cuadrante: la "correlación" estancamiento ↔ pobreza ───────
+                st.subheader("Cuadrante de auditoría — pobreza vs avance")
+                med_pob = risk["pobreza_pct"].median()
+                med_av  = risk["avance_pct"].median()
+                fig_q = px.scatter(
+                    risk, x="pobreza_pct", y="avance_pct", size="PIM",
+                    color="riesgo_social", color_continuous_scale="Inferno",
+                    hover_name="region", size_max=40,
+                    labels={"pobreza_pct": "Pobreza monetaria 2025 (%)",
+                            "avance_pct": "Avance de ejecución (%)"},
+                    title="Alta pobreza + bajo avance = prioridad de auditoría",
+                    template="plotly_dark",
+                )
+                fig_q.add_vline(x=med_pob, line_dash="dot", line_color="#8b949e")
+                fig_q.add_hline(y=med_av, line_dash="dot", line_color="#8b949e")
+                fig_q.add_annotation(x=risk["pobreza_pct"].max(), y=risk["avance_pct"].min(),
+                                     text="⚠️ Zona crítica", showarrow=False,
+                                     font=dict(color="#f85149", size=13), xanchor="right")
+                fig_q.update_layout(paper_bgcolor="#0d1117", plot_bgcolor="#161b22", height=480)
+                st.plotly_chart(fig_q, use_container_width=True)
+
+                # ── Top departamentos prioritarios ────────────────────────────
+                st.markdown("**Departamentos prioritarios (mayor índice de riesgo social):**")
+                top = risk.sort_values("riesgo_social", ascending=False).head(8)
+                st.dataframe(
+                    top[["region", "pobreza_pct", "no_ejec_social_pct", "avance_pct", "riesgo_social"]]
+                    .rename(columns={"region": "Departamento", "pobreza_pct": "Pobreza 2025 (%)",
+                                     "no_ejec_social_pct": "No ejec. social (%)",
+                                     "avance_pct": "Avance (%)", "riesgo_social": "Índice riesgo"}),
+                    use_container_width=True, hide_index=True,
+                )
+
+    except Exception as e:  # noqa: BLE001 — proteger los demás tabs ante cualquier fallo
+        st.error(f"Error al construir la pestaña territorial: {e}")
+        st.caption("La app sigue operativa; revisa los insumos (parquet / geojson / pobreza).")
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -510,19 +675,31 @@ with tab4:
         st.info("Sin ejecuciones registradas aún. Lanzar el pipeline para ver el historial.")
     else:
         runs_df = pd.DataFrame(runs)
-        st.dataframe(runs_df, use_container_width=True, height=300)
+        show_cols = [c for c in ["period", "status", "source", "rows", "duration_s", "ended_at"]
+                     if c in runs_df.columns]
+        st.dataframe(runs_df[show_cols] if show_cols else runs_df,
+                     use_container_width=True, height=240, hide_index=True)
 
-        fig_runs = px.timeline(
-            runs_df if "timestamp" in runs_df.columns else pd.DataFrame(),
-            x_start="timestamp" if "timestamp" in runs_df.columns else None,
-            y="period" if "period" in runs_df.columns else None,
-            title="Línea de Tiempo de Ejecuciones",
-            template="plotly_dark",
-        ) if "timestamp" in runs_df.columns else None
-
-        if fig_runs:
-            fig_runs.update_layout(paper_bgcolor="#0d1117")
-            st.plotly_chart(fig_runs, use_container_width=True)
+        # Cronología de ejecuciones (scatter sobre eje temporal; robusto a duraciones dispares).
+        time_col = "ended_at" if "ended_at" in runs_df.columns else (
+            "timestamp" if "timestamp" in runs_df.columns else None)
+        if time_col and "period" in runs_df.columns:
+            tl = runs_df.copy()
+            tl[time_col] = pd.to_datetime(tl[time_col], errors="coerce")
+            tl = tl.dropna(subset=[time_col])
+            if not tl.empty:
+                fig_runs = px.scatter(
+                    tl, x=time_col, y="period",
+                    color="source" if "source" in tl.columns else None,
+                    size="rows" if "rows" in tl.columns else None,
+                    color_discrete_map={"real": "#3fb950", "mock": "#d29922"},
+                    hover_data=[c for c in ["status", "duration_s", "rows"] if c in tl.columns],
+                    title="Cronología de ejecuciones del pipeline",
+                    labels={time_col: "Fecha/hora de ejecución", "period": "Período"},
+                    template="plotly_dark",
+                )
+                fig_runs.update_layout(paper_bgcolor="#0d1117", plot_bgcolor="#161b22", height=300)
+                st.plotly_chart(fig_runs, use_container_width=True)
 
     st.divider()
 
