@@ -14,6 +14,8 @@ All data loaders use @st.cache_data for sub-second renders.
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import unicodedata
 from pathlib import Path
 
@@ -256,6 +258,35 @@ def _minmax(s: pd.Series) -> pd.Series:
     return (s - lo) / (hi - lo)
 
 
+def _playground_run_pipeline() -> None:
+    """Callback del playground (Tab 4): ejecuta el pipeline para el período elegido.
+
+    Corre `python src/data_pipeline.py --period <p> --mock` como subproceso (el mismo comando
+    que el CLI), limpia el caché y cambia la vista del dashboard al período recién procesado.
+    Al ser un callback (corre antes del rerun) puede fijar el widget 'sidebar_period'.
+    PROTEGE el período real 2025-12: nunca lo sobrescribe con datos mock.
+    """
+    period = st.session_state.get("playground_period", "")
+    if period == "2025-12":
+        st.session_state["_play_msg"] = ("error", "El período 2025-12 está protegido (datos reales del MEF).")
+        return
+    try:
+        res = subprocess.run(
+            [sys.executable, str(ROOT / "src" / "data_pipeline.py"), "--period", period, "--mock"],
+            cwd=str(ROOT), capture_output=True, text=True, timeout=180,
+        )
+    except Exception as e:  # noqa: BLE001
+        st.session_state["_play_msg"] = ("error", f"No se pudo ejecutar el pipeline: {e}")
+        return
+    if res.returncode == 0:
+        st.cache_data.clear()
+        st.session_state["sidebar_period"] = period   # cambia la vista al período recién generado
+        st.session_state["_play_msg"] = (
+            "success", f"Pipeline ejecutado para {period}. Datos (mock) regenerados y vista actualizada.")
+    else:
+        st.session_state["_play_msg"] = ("error", (res.stderr or res.stdout or "Error desconocido")[-600:])
+
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 
 with st.sidebar:
@@ -264,11 +295,13 @@ with st.sidebar:
     st.caption("Pipeline Multi-Agente · Gasto Subnacional")
 
     st.divider()
+    if "sidebar_period" not in st.session_state:
+        st.session_state.sidebar_period = "2025-12"
     selected_period = st.selectbox(
         "📅 Período fiscal",
         options=["2025-12", "2025-Q4", "2025-Q3", "2025-Q2", "2025-Q1", "2025"],
-        index=0,
-        help="El Executor Skill actualizará los datos al cambiar el período.",
+        key="sidebar_period",
+        help="El Executor Skill actualizará los datos al cambiar el período. El playground del Tab 4 también lo cambia.",
     )
     st.caption(f"Período activo: `{selected_period}`")
 
@@ -705,25 +738,34 @@ with tab4:
 
     st.divider()
 
-    # ── Live playground ───────────────────────────────────────────────────────
-    st.subheader("🎮 Playground — Cambio de Período en Vivo")
-    st.markdown("Lanza el Executor Skill directamente desde el dashboard para refrescar los datos.")
+    # ── Live playground (ejecuta el pipeline de verdad) ───────────────────────
+    st.subheader("🎮 Playground — Ejecuta el pipeline en vivo")
+    st.markdown("Elige un período y ejecútalo: corre el mismo pipeline que el CLI y el dashboard se "
+                "actualiza al período recién procesado.")
 
     play_period = st.selectbox(
-        "Seleccionar período para re-procesar:",
-        ["2025-12", "2025-Q4", "2025-Q3", "2025-Q2", "2025-Q1"],
+        "Período a procesar (modo mock):",
+        ["2025-Q4", "2025-Q3", "2025-Q2", "2025-Q1"],
         key="playground_period",
+        help="2025-12 está protegido porque contiene los datos reales del MEF.",
     )
 
-    col_a, col_b = st.columns(2)
-    with col_a:
-        st.code(f'claude "run executor_skill for period {play_period}"', language="bash")
-        st.caption("Copiar y ejecutar en terminal con Claude Code CLI instalado")
-    with col_b:
-        st.code(f'python src/data_pipeline.py --period {play_period}', language="bash")
-        st.caption("Alternativa: ejecutar pipeline directamente")
+    st.code(f'claude "run executor_skill for period {play_period}"', language="bash")
+    st.caption(
+        f"Equivalente CLI. El botón ejecuta `python src/data_pipeline.py --period {play_period} --mock` "
+        "como subproceso, registra la corrida y cambia la vista a ese período."
+    )
 
-    if st.button("🔄 Limpiar caché y recargar datos", type="primary"):
-        st.cache_data.clear()
-        st.success("Caché limpiada. Recargando…")
-        st.rerun()
+    # Mensaje del último run (lo setea el callback; se muestra tras el rerun).
+    _msg = st.session_state.pop("_play_msg", None)
+    if _msg:
+        (st.success if _msg[0] == "success" else st.error)(_msg[1])
+
+    col_run, col_clear = st.columns(2)
+    with col_run:
+        st.button("▶ Ejecutar pipeline ahora", type="primary",
+                  on_click=_playground_run_pipeline, use_container_width=True)
+    with col_clear:
+        if st.button("🔄 Limpiar caché y recargar", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
