@@ -162,7 +162,8 @@ normalización NFKD (tildes → ASCII), cobertura 24/24.
   protección social, vivienda).
 - *Vulnerabilidad*: pobreza monetaria 2025 por departamento — **INEI, "Perú: Evolución de la
   Pobreza Monetaria 2016-2025"** (publicado 05-may-2026; `data/geo/pobreza_monetaria_2025.csv`,
-  punto medio de los grupos del Cuadro 4.2 con IC al 95%).
+  valores puntuales por departamento del Gráfico 4.7; LIMA = Lima Metropolitana). Nota: dentro de un
+  mismo grupo robusto del INEI las diferencias entre departamentos no son significativas.
 
 > Todas las pestañas 2-4 usan **exclusivamente datos modernos (2025)**; la era 1964 vive solo en el
 > Tab 1. El render de cada pestaña usa `@st.cache_data` para tiempos sub-segundo.
