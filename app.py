@@ -206,11 +206,12 @@ def load_geojson() -> dict:
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_pobreza_2025() -> pd.DataFrame:
-    """Pobreza monetaria 2025 por departamento (INEI, Cuadro 4.2 — punto medio del grupo).
+    """Pobreza monetaria 2025 por departamento (INEI — valores puntuales, Gráfico 4.7).
 
     Fuente: INEI, "Perú: Evolución de la Pobreza Monetaria 2016-2025" (publicado 05-may-2026).
-    INEI agrupa los departamentos en bandas con niveles estadísticamente semejantes (IC 95%);
-    se usa el punto medio del intervalo de cada grupo como valor del departamento.
+    Se usa el estimado puntual por departamento del Gráfico 4.7; LIMA = Lima Metropolitana.
+    La columna grupo_inei indica el grupo robusto del Cuadro 4.2: dentro de un mismo grupo las
+    diferencias entre departamentos no son estadísticamente significativas.
     """
     path = GEO_DIR / "pobreza_monetaria_2025.csv"
     if not path.exists():
@@ -513,8 +514,9 @@ with tab2:
             st.subheader("Mapa 2 · Riesgo social — estancamiento del gasto social × pobreza 2025")
             st.caption(
                 "Estancamiento social = % no ejecutado en salud, educación, saneamiento, protección "
-                "social y vivienda (SIAF 2025). Vulnerabilidad = pobreza monetaria 2025 (INEI, grupos "
-                "del Cuadro 4.2; punto medio del intervalo)."
+                "social y vivienda (SIAF 2025). Vulnerabilidad = pobreza monetaria 2025 por departamento "
+                "(INEI, valores puntuales del Gráfico 4.7; las diferencias dentro de un mismo grupo no son "
+                "estadísticamente significativas)."
             )
 
             social  = compute_social_stagnation(selected_period)
@@ -523,7 +525,7 @@ with tab2:
                 st.info("No hay datos de funciones sociales o de pobreza para construir el índice de riesgo.")
             else:
                 risk = social.merge(
-                    pobreza[["dep", "pobreza_pct", "pobreza_inf", "pobreza_sup", "grupo_inei"]],
+                    pobreza[["dep", "pobreza_pct", "grupo_inei"]],
                     on="dep", how="inner",
                 ).merge(df_geo[["dep", "region", "avance_pct", "PIM"]], on="dep", how="left")
                 risk["riesgo_social"] = _minmax(risk["no_ejec_social_pct"]) * _minmax(risk["pobreza_pct"])
